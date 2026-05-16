@@ -1,0 +1,10 @@
+build/
+out/
+.vs/
+.vscode/
+*.user
+*.suo
+CMakeSettings.json
+cmake-build-*/
+external/LiquidHookEx/.git/
+hooks.json
