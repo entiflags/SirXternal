@@ -1,0 +1,3 @@
+[submodule "external/LiquidHookEx"]
+	path = external/LiquidHookEx
+	url = https://github.com/xsip/LiquidHookEx.git
