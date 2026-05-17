@@ -1,5 +1,6 @@
 add_executable(sir_xternal
     main.cpp
+    ../sdk/schema.cpp
 )
 
 target_include_directories(sir_xternal PRIVATE
