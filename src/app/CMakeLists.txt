@@ -1,6 +1,8 @@
 add_executable(sir_xternal
     main.cpp
     ../sdk/schema.cpp
+    ../sdk/vector.cpp
+    ../sdk/matrix.cpp
     ../hooks/present_hook.cpp
     ../overlay/headless_renderer.cpp
 

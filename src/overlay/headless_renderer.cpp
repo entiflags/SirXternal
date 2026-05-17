@@ -190,7 +190,5 @@ void headless_renderer::render_thread() {
 
 		// release to consumer (key 1)
 		mutex_->ReleaseSync(1);
-
-		Sleep(1); // ~1000fps cap, consumer controls actual framerate
 	}
 }

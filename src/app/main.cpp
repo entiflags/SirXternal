@@ -3,9 +3,12 @@
 #include "sdk/game_context.h"
 #include "overlay/headless_renderer.h"
 #include "overlay/render_object_manager.h"
+#include "overlay/menu.h"
+#include "overlay/esp.h"
 #include "hooks/present_hook.h"
 #include "hooks/steam_swapchain.h"
 #include <cstdio>
+#include <memory>
 #include <thread>
 #include <chrono>
 
@@ -39,6 +42,8 @@ int main() {
     }
 
     render_object_manager render_mgr;
+    render_mgr.add(std::make_shared<main_menu>());
+    render_mgr.add(std::make_shared<esp_renderer>(&ctx));
     HWND game_hwnd = LiquidHookEx::proc->GetHwnd();
 
     printf("[~] starting headless renderer...\n");
@@ -68,7 +73,7 @@ int main() {
         Sleep(100);
     }
 
-    present_hook::uninstall();
+    printf("[~] stopping renderer...\n");
     headless_renderer::stop();
 
     printf("[+] exiting.\n");

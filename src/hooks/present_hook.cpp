@@ -27,7 +27,112 @@ namespace present_hook {
         typedef HRESULT(__stdcall* present_fn)(IDXGISwapChain*, UINT, UINT);
         present_fn original = (present_fn)g_original_present;
 
-        // just call original for now — test that hook works without crashing
+        if (!data->init_done) {
+            swap_chain->GetDevice(data->iid_device, (void**)&data->device);
+            if (data->device)
+                data->device->GetImmediateContext(&data->ctx);
+
+            if (!data->device || !data->ctx) {
+                data->init_done = true;
+                return original(swap_chain, sync_interval, flags);
+            }
+
+            data->device->CreateVertexShader(data->vs_blob, data->vs_blob_size, nullptr, &data->composite_vs);
+            data->device->CreatePixelShader(data->ps_blob, data->ps_blob_size, nullptr, &data->composite_ps);
+
+            D3D11_BLEND_DESC bd{};
+            bd.RenderTarget[0].BlendEnable = TRUE;
+            bd.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
+            bd.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
+            bd.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
+            bd.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
+            bd.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
+            bd.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
+            bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+            data->device->CreateBlendState(&bd, &data->composite_blend);
+
+            D3D11_SAMPLER_DESC sd{};
+            sd.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+            sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+            sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+            sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+            data->device->CreateSamplerState(&sd, &data->composite_sampler);
+
+            D3D11_RASTERIZER_DESC rd{};
+            rd.FillMode = D3D11_FILL_SOLID;
+            rd.CullMode = D3D11_CULL_NONE;
+            data->device->CreateRasterizerState(&rd, &data->composite_rs);
+
+            HANDLE mapping = data->fn_open_file_mapping(FILE_MAP_READ, FALSE, data->shared_mem_name);
+            if (mapping) {
+                struct hs_t { HANDLE handle; UINT w, h; DWORD pid; };
+                auto* hs = (hs_t*)data->fn_map_view_of_file(mapping, FILE_MAP_READ, 0, 0, sizeof(hs_t));
+                if (hs) {
+                    data->device->OpenSharedResource(hs->handle, data->iid_texture2d, (void**)&data->overlay_tex);
+                    if (data->overlay_tex) {
+                        data->device->CreateShaderResourceView(data->overlay_tex, nullptr, &data->overlay_srv);
+                        data->overlay_tex->QueryInterface(data->iid_keyed_mutex, (void**)&data->overlay_mutex);
+                        data->overlay_ready = (data->overlay_srv && data->overlay_mutex);
+                    }
+                    data->fn_unmap_view_of_file(hs);
+                }
+                data->fn_close_handle(mapping);
+            }
+
+            data->init_done = true;
+        }
+
+        if (data->overlay_ready) {
+            bool acquired = (data->overlay_mutex->AcquireSync(1, 0) == 0);
+
+            // save state
+            ID3D11RenderTargetView* old_rtv = nullptr;
+            ID3D11DepthStencilView* old_dsv = nullptr;
+            data->ctx->OMGetRenderTargets(1, &old_rtv, &old_dsv);
+
+            ID3D11Texture2D* bb = nullptr;
+            swap_chain->GetBuffer(0, data->iid_texture2d, (void**)&bb);
+
+            if (bb) {
+                ID3D11RenderTargetView* rtv = nullptr;
+                data->device->CreateRenderTargetView(bb, nullptr, &rtv);
+
+                if (rtv) {
+                    D3D11_TEXTURE2D_DESC desc{};
+                    bb->GetDesc(&desc);
+
+                    D3D11_VIEWPORT vp{};
+                    vp.Width = (float)desc.Width;
+                    vp.Height = (float)desc.Height;
+                    vp.MaxDepth = data->float_one;
+
+                    float bf[4] = { 0, 0, 0, 0 };
+                    data->ctx->OMSetRenderTargets(1, &rtv, nullptr);
+                    data->ctx->OMSetBlendState(data->composite_blend, bf, 0xFFFFFFFF);
+                    data->ctx->RSSetState(data->composite_rs);
+                    data->ctx->RSSetViewports(1, &vp);
+                    data->ctx->VSSetShader(data->composite_vs, nullptr, 0);
+                    data->ctx->PSSetShader(data->composite_ps, nullptr, 0);
+                    data->ctx->PSSetShaderResources(0, 1, &data->overlay_srv);
+                    data->ctx->PSSetSamplers(0, 1, &data->composite_sampler);
+                    data->ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                    data->ctx->IASetInputLayout(nullptr);
+                    data->ctx->Draw(4, 0);
+
+                    rtv->Release();
+                }
+                bb->Release();
+            }
+
+            // restore state
+            data->ctx->OMSetRenderTargets(1, &old_rtv, old_dsv);
+            if (old_rtv) old_rtv->Release();
+            if (old_dsv) old_dsv->Release();
+
+            if (acquired)
+                data->overlay_mutex->ReleaseSync(0);
+        }
+
         return original(swap_chain, sync_interval, flags);
     }
 
@@ -132,8 +237,20 @@ namespace present_hook {
             );
 
 
-        if (result)
+        if (result) {
             printf("[+] present_hook: installed\n");
+            // reset init_done in remote hook data so shellcode re-initializes
+            auto remote_data = s_hook.GetDataRemote();
+            if (remote_data) {
+                // init_done is at the end of hook_data struct
+                size_t init_done_offset = offsetof(hook_data, init_done);
+                bool false_val = false;
+                LiquidHookEx::proc->Write<bool>(
+                    reinterpret_cast<uintptr_t>(remote_data) + init_done_offset, false_val);
+                LiquidHookEx::proc->Write<bool>(
+                    reinterpret_cast<uintptr_t>(remote_data) + offsetof(hook_data, overlay_ready), false_val);
+            }
+        }
         else
             printf("[-] present_hook: installation failed\n");
 
