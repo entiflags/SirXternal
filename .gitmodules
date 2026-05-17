@@ -1,3 +1,6 @@
 [submodule "external/LiquidHookEx"]
 	path = external/LiquidHookEx
 	url = https://github.com/xsip/LiquidHookEx.git
+[submodule "external/imgui"]
+	path = external/imgui
+	url = https://github.com/ocornut/imgui.git

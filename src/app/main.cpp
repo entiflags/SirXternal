@@ -1,6 +1,10 @@
 #include <LiquidHookEx/Include.h>
 #include "sdk/schema.h"
 #include "sdk/game_context.h"
+#include "overlay/headless_renderer.h"
+#include "overlay/render_object_manager.h"
+#include "hooks/present_hook.h"
+#include "hooks/steam_swapchain.h"
 #include <cstdio>
 #include <thread>
 #include <chrono>
@@ -13,32 +17,12 @@ int main() {
     printf("[+] SirXternal starting...\n");
 
     LiquidHookEx::INIT("cs2.exe");
-
     if (!LiquidHookEx::proc || !LiquidHookEx::proc->m_hProc) {
         printf("[-] failed to attach to cs2.exe\n");
         system("pause");
         return 1;
     }
-
     printf("[+] attached to cs2.exe (pid: %d)\n", LiquidHookEx::proc->GetProcId());
-
-    auto* client = LiquidHookEx::proc->GetRemoteModule("client.dll");
-    if (!client || !client->IsValid()) {
-        printf("[-] client.dll not found\n");
-        system("pause");
-        return 1;
-    }
-    printf("[+] client.dll @ 0x%llX (size: 0x%llX)\n",
-           (uint64_t)client->GetAddr(), (uint64_t)client->GetSize());
-
-    auto* schemasys = LiquidHookEx::proc->GetRemoteModule("schemasystem.dll");
-    if (!schemasys || !schemasys->IsValid()) {
-        printf("[-] schemasystem.dll not found\n");
-        system("pause");
-        return 1;
-    }
-    printf("[+] schemasystem.dll @ 0x%llX (size: 0x%llX)\n",
-        (uint64_t)schemasys->GetAddr(), (uint64_t)schemasys->GetSize());
 
     schema::g_schema = new schema::schema_system(LiquidHookEx::proc);
     if (!schema::g_schema->init()) {
@@ -54,60 +38,40 @@ int main() {
         return 1;
     }
 
-    printf("[+] entity_list: 0x%llX\n", (uint64_t)ctx.entity_list);
-    printf("[+] view_matrix: 0x%llX\n", (uint64_t)ctx.view_matrix);
-    printf("[+] csgo_input: 0x%llX\n", (uint64_t)ctx.csgo_input);
-    printf("[+] local_player_controller: 0x%llX\n", (uint64_t)ctx.local_player_controller);
+    render_object_manager render_mgr;
+    HWND game_hwnd = LiquidHookEx::proc->GetHwnd();
 
-    uintptr_t controller = ctx.proc->ReadDirect<uintptr_t>(ctx.local_player_controller);
-    printf("[+] local controller ptr: 0x%llX\n", (uint64_t)controller);
+    printf("[~] starting headless renderer...\n");
+    headless_renderer::start(&render_mgr, game_hwnd, 1920, 1080);
+    printf("[~] waiting for renderer...\n");
+    while (!headless_renderer::is_ready())
+        Sleep(1);
+    printf("[+] headless renderer ready\n");
 
-    if (controller) {
-        uint32_t pawn_handle = ctx.proc->ReadDirect<uint32_t>(
-            controller + ctx.schema->get_offset("CCSPlayerController", "m_hPlayerPawn"));
-        printf("[+] pawn handle: 0x%X\n", pawn_handle);
+    printf("[~] finding swap chain...\n");
+    uintptr_t swap_chain = steam::get_swapchain(LiquidHookEx::proc);
+    if (!swap_chain) {
+        printf("[-] failed to find swap chain\n");
+        system("pause");
+        return 1;
+    }
+    printf("[+] swap chain: 0x%llX\n", (uint64_t)swap_chain);
 
-        char name[128]{};
-        uint32_t name_off = ctx.schema->get_offset("CBasePlayerController", "m_iszPlayerName");
-        if (name_off) {
-            ctx.proc->Read(controller + name_off, name, 127);
-            printf("[+] player name: %s\n", name);
-        }
-
-        int pawn_index = pawn_handle & 0x7FFF;
-        int chunk_index = pawn_index >> 9;
-        int offset_in_chunk = pawn_index & 0x1FF;
-
-        uintptr_t chunk = ctx.proc->ReadDirect<uintptr_t>(
-            ctx.entity_list + 8 * chunk_index + 16);
-        printf("[~] chunk: 0x%llX\n", (uint64_t)chunk);
-
-        if (chunk) {
-            uintptr_t identity = chunk + 112 * offset_in_chunk;
-            uintptr_t pawn = ctx.proc->ReadDirect<uintptr_t>(identity);
-            printf("[+] pawn: 0x%llX\n", (uint64_t)pawn);
-
-            if (pawn) {
-                int health = ctx.proc->ReadDirect<int>(
-                    pawn + ctx.schema->get_offset("C_BaseEntity", "m_iHealth"));
-                int team = ctx.proc->ReadDirect<int>(
-                    pawn + ctx.schema->get_offset("C_BaseEntity", "m_iTeamNum"));
-                printf("[+] health: %d, team: %d\n", health, team);
-
-                uintptr_t scene_node = ctx.proc->ReadDirect<uintptr_t>(
-                    pawn + ctx.schema->get_offset("C_BaseEntity", "m_pGameSceneNode"));
-                if (scene_node) {
-                    struct { float x, y, z; } pos{};
-                    ctx.proc->Read(
-                        scene_node + ctx.schema->get_offset("CGameSceneNode", "m_vecAbsOrigin"),
-                        &pos, sizeof(pos));
-                    printf("[+] position: %.1f, %.1f, %.1f\n", pos.x, pos.y, pos.z);
-                }
-            }
-        }
+    if (!present_hook::install(swap_chain)) {
+        printf("[-] present hook failed\n");
+        system("pause");
+        return 1;
     }
 
-    system("pause");
+    printf("[+] running. press DELETE to exit.\n");
+    while (!(GetAsyncKeyState(VK_DELETE) & 0x8000)) {
+        Sleep(100);
+    }
+
+    present_hook::uninstall();
+    headless_renderer::stop();
+
+    printf("[+] exiting.\n");
     delete schema::g_schema;
     return 0;
 }
