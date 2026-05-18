@@ -4,6 +4,9 @@ add_executable(sir_xternal
     ../sdk/vector.cpp
     ../sdk/matrix.cpp
     ../hooks/present_hook.cpp
+    ../hooks/spread_hook.cpp
+    ../hooks/create_move_hook.cpp
+    ../hooks/angle_hook.cpp
     ../overlay/headless_renderer.cpp
 
     ${CMAKE_SOURCE_DIR}/external/imgui/imgui.cpp
